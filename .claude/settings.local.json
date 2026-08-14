@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mvnw.cmd -DskipTests package -q)",
+      "Bash(./mvnw -DskipTests package)",
+      "PowerShell(java *)",
+      "PowerShell(mvn *)",
+      "Bash(mvn -DskipTests package -q)"
+    ]
+  }
+}

@@ -52,6 +52,8 @@ public class MapRenderer
 
 	/** Resolution of the tile-shape masks (higher = smoother diagonals). */
 	public static final int SHAPE_SCALE = 8;
+	/** Width of the neighbor strip (tiles) shown around the main region in 2D view. */
+	public static final int NEIGHBOR_STRIP = 5;
 	private static byte[][][] TILE_SHAPES; // [shape 1..8 -1][rotation][row*S+col]
 
 	private final MapEditorService service;
@@ -196,6 +198,82 @@ public class MapRenderer
 		{
 			drawServerSpawns(g, model, plane, tileSize);
 		}
+
+		g.dispose();
+		return image;
+	}
+
+	/**
+	 * Renders the main region surrounded by neighbor regions. {@code stripTiles} controls how many
+	 * tiles of each neighbor to show (use {@link #NEIGHBOR_STRIP} for a 5-tile reference strip,
+	 * or {@code X} for a full 3×3 grid of regions). {@code neighbors} is [N,S,E,W,NE,NW,SE,SW];
+	 * null entries are skipped. Returns a {@code (X+2*stripTiles)×(Y+2*stripTiles)}-tile image.
+	 */
+	public BufferedImage renderWithNeighbors(RegionModel model, RegionModel[] neighbors,
+		int plane, int tileSize, int stripTiles, Options opt)
+	{
+		ensureShapes();
+		int S = Math.min(stripTiles, X);
+		int ts = tileSize;
+		int total = (X + 2 * S) * ts;
+
+		BufferedImage image = new BufferedImage(total, total, BufferedImage.TYPE_INT_RGB);
+		Graphics2D g = image.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		g.setColor(VOID);
+		g.fillRect(0, 0, total, total);
+
+		// Destination and source rectangles for each of the 8 neighbors.
+		// Destination: position in the extended image. Source: strip in the neighbor's 64×64 render.
+		// Order: [N, S, E, W, NE, NW, SE, SW]
+		int[][] dstBox = {
+			{S*ts,     0,          (S+X)*ts, S*ts},         // N  — top strip
+			{S*ts,     (S+Y)*ts,   (S+X)*ts, total},        // S  — bottom strip
+			{(S+X)*ts, S*ts,       total,    (S+Y)*ts},     // E  — right strip
+			{0,        S*ts,       S*ts,     (S+Y)*ts},     // W  — left strip
+			{(S+X)*ts, 0,          total,    S*ts},         // NE — top-right corner
+			{0,        0,          S*ts,     S*ts},          // NW — top-left corner
+			{(S+X)*ts, (S+Y)*ts,   total,    total},        // SE — bottom-right corner
+			{0,        (S+Y)*ts,   S*ts,     total},        // SW — bottom-left corner
+		};
+		// Source rows/cols in the neighbor's rendered image (x→right, y→top-down, y=0 in render = tile y=63).
+		// N neighbor: its y=0..S-1 tiles (southernmost) sit in the bottom S rows of its render.
+		// S neighbor: its y=Y-S..Y-1 (northernmost) sit in the top S rows of its render. Etc.
+		int[][] srcBox = {
+			{0,        (Y-S)*ts,  X*ts,     Y*ts},          // N:  bottom S rows
+			{0,        0,          X*ts,     S*ts},          // S:  top S rows
+			{0,        0,          S*ts,     Y*ts},          // E:  left S cols
+			{(X-S)*ts, 0,          X*ts,     Y*ts},          // W:  right S cols
+			{0,        (Y-S)*ts,  S*ts,     Y*ts},           // NE: SW corner
+			{(X-S)*ts, (Y-S)*ts,  X*ts,     Y*ts},           // NW: SE corner
+			{0,        0,          S*ts,     S*ts},           // SE: NW corner
+			{(X-S)*ts, 0,          X*ts,     S*ts},           // SW: NE corner
+		};
+
+		for (int i = 0; i < 8; i++)
+		{
+			if (neighbors == null || i >= neighbors.length || neighbors[i] == null)
+			{
+				continue;
+			}
+			try
+			{
+				BufferedImage nb = render(neighbors[i], plane, tileSize, opt);
+				int[] d = dstBox[i], sc = srcBox[i];
+				g.drawImage(nb, d[0], d[1], d[2], d[3], sc[0], sc[1], sc[2], sc[3], null);
+			}
+			catch (Throwable ignored) {}
+		}
+
+		// Main region in the centre (drawn after neighbors so its edges are always crisp).
+		g.drawImage(render(model, plane, tileSize, opt), S * ts, S * ts, null);
+
+		// Semi-transparent veil over the neighbor strips so they read as reference, not editable.
+		g.setColor(new Color(0, 0, 0, 120));
+		g.fillRect(0, 0, total, S * ts);                       // top
+		g.fillRect(0, (S + Y) * ts, total, S * ts);            // bottom
+		g.fillRect(0, S * ts, S * ts, Y * ts);                 // left  (sides, corners already covered)
+		g.fillRect((S + X) * ts, S * ts, S * ts, Y * ts);      // right
 
 		g.dispose();
 		return image;

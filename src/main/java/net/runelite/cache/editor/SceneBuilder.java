@@ -80,11 +80,13 @@ public class SceneBuilder
 	}
 
 	/**
-	 * Appends a dimmed {@value #STRIP_TILES}-tile edge strip of each surrounding region around
-	 * {@code model} (4 sides + 4 corners), translated into place so region boundaries line up
-	 * in the 3D view. Cheap after the first call (neighbour scenes are cached).
+	 * Appends dimmed neighbor regions around {@code model} in the 3D scene. {@code stripTiles}
+	 * controls how many tiles to show: use {@value #STRIP_TILES} for a thin reference edge,
+	 * or {@link Region#X} (64) for a full 3×3 grid of regions. Cheap after the first call
+	 * (neighbour scenes are cached and reused regardless of strip size).
 	 */
-	public void appendNeighborStrips(Renderer3D.Scene scene, RegionModel model, int plane, boolean renderObjects)
+	public void appendNeighborStrips(Renderer3D.Scene scene, RegionModel model, int plane,
+		boolean renderObjects, int stripTiles)
 	{
 		int rx = model.getRegionX(), ry = model.getRegionY();
 		String sig = model.getRegionId() + "/" + plane + "/" + renderObjects + "/" + renderTextures
@@ -115,7 +117,7 @@ public class SceneBuilder
 				}
 			}
 		}
-		float full = 64f * TILE, strip = STRIP_TILES * TILE, dim = 0.5f, INF = 1e9f;
+		float full = 64f * TILE, strip = Math.min(stripTiles, 64) * TILE, dim = 0.5f, INF = 1e9f;
 		// A region only renders 63 of its 64 tile rows (the last needs a neighbour's heights),
 		// so join the neighbour to the rendered edge at (full - TILE) — no gap.
 		float off = full - TILE;

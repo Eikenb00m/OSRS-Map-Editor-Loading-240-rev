@@ -67,8 +67,10 @@ public class MapEditorFrame extends JFrame
 	private BufferedImage image3D;
 
 	// "Neighbours" preview: a dimmed 5-tile-wide strip of the adjacent regions on all 4
-	// sides in the 3D view, so region edges can be lined up. Built by SceneBuilder.
+	// sides in the 2D and 3D views, so region edges can be lined up.
 	private boolean showNeighbors;
+	private final RegionModel[] neighborModels2D = new RegionModel[8]; // [N,S,E,W,NE,NW,SE,SW]
+	private String neighborSig2D;
 
 	// 3D view — render size follows the viewport so it fills the window
 	private int view3dW = 960, view3dH = 720;
@@ -95,6 +97,8 @@ public class MapEditorFrame extends JFrame
 	// downscaled fast renderer — smoother on a powerful PC, heavier on a weak one. Toggled in Settings.
 	private boolean sharpWhileMoving = false;
 	private javax.swing.JScrollPane canvasScroll;
+	private JFrame popout2DFrame;
+	private JFrame popout3DFrame;
 	private boolean splitMode;
 	private boolean splitHorizontal = true; // like the official editor: 2D left, 3D right
 	private javax.swing.JSplitPane splitPane;
@@ -578,6 +582,9 @@ public class MapEditorFrame extends JFrame
 		javax.swing.JMenu win = new javax.swing.JMenu("Window");
 		win.add(menuItem("Go To (world map)…", e -> goToDialog()));
 		win.add(menuItem("Add Region…", e -> addRegionDialog()));
+		win.add(new javax.swing.JSeparator());
+		win.add(menuItem("Pop out 2D View", e -> togglePopout2D()));
+		win.add(menuItem("Pop out 3D View", e -> togglePopout3D()));
 		mb.add(win);
 
 		javax.swing.JMenu help = new javax.swing.JMenu("Help");
@@ -1355,10 +1362,13 @@ public class MapEditorFrame extends JFrame
 			showNeighbors = s;
 			sceneBuilder.invalidateNeighbors();
 			sceneDirty = true;
+			neighborSig2D = null;
+			update2DCanvasSize();
+			if (show2D() || splitMode) { render2D(); }
 			if (show3D()) { render3DFull(); }
 		});
 		neighborsCb.setToolTipText("<html>Show a dimmed <b>5-tile</b> strip of the 4 adjacent regions around this one"
-			+ " in the <b>3D view</b>, so you can line up terrain/objects across region edges.</html>");
+			+ " in the <b>2D and 3D views</b>, so you can line up terrain/objects across region edges.</html>");
 		diag.add(neighborsCb);
 		c.add(ribbonGroup("Diagnostics", diag));
 
@@ -3393,7 +3403,7 @@ public class MapEditorFrame extends JFrame
 		pinnable.add(new PinItem("Wall conflicts", () -> showConflicts,
 			v -> { showConflicts = v; canvas3D.repaint(); if (splitMode) { canvas2D.repaint(); } }));
 		pinnable.add(new PinItem("Neighbours", () -> showNeighbors,
-			v -> { showNeighbors = v; sceneBuilder.invalidateNeighbors(); sceneDirty = true; if (show3D()) { render3DFull(); } }));
+			v -> { showNeighbors = v; sceneBuilder.invalidateNeighbors(); sceneDirty = true; neighborSig2D = null; update2DCanvasSize(); if (show2D() || splitMode) { render2D(); } if (show3D()) { render3DFull(); } }));
 		pinnable.add(new PinItem("All planes", () -> viewAllPlanes,
 			v -> { viewAllPlanes = v; renderOptions.allPlanes = v; sceneDirty = true; rerender(); }));
 		pinnable.add(new PinItem("Ghost below", () -> renderOptions.ghostLowerPlanes,
@@ -3941,8 +3951,8 @@ public class MapEditorFrame extends JFrame
 	private void update2DCanvasSize()
 	{
 		Dimension vp = canvasScroll.getViewport().getExtentSize();
-		int w = Math.max(64 * tileSize, vp.width);
-		int h = Math.max(64 * tileSize, vp.height);
+		int w = Math.max(image2DSize(), vp.width);
+		int h = Math.max(image2DSize(), vp.height);
 		canvas2D.setPreferredSize(new Dimension(w, h));
 		canvas2D.revalidate();
 	}
@@ -3967,13 +3977,46 @@ public class MapEditorFrame extends JFrame
 	{
 		if (region != null)
 		{
-			image2D = renderer.render(region, plane, tileSize, renderOptions);
+			if (showNeighbors)
+			{
+				ensureNeighborModels2D();
+				image2D = renderer.renderWithNeighbors(region, neighborModels2D, plane, tileSize,
+					net.runelite.cache.region.Region.X, renderOptions);
+			}
+			else
+			{
+				image2D = renderer.render(region, plane, tileSize, renderOptions);
+			}
 			canvas2D.repaint();
+			if (popout2DFrame != null && popout2DFrame.isVisible()) popout2DFrame.repaint();
 			if (minimap != null)
 			{
 				minimapImage = renderer.render(region, plane, 4, renderOptions);
 				minimap.repaint();
 			}
+		}
+	}
+
+	private int neighbor2DStrip() { return showNeighbors ? net.runelite.cache.region.Region.X * tileSize : 0; }
+	private int image2DSize() { return 64 * tileSize + 2 * neighbor2DStrip(); }
+
+	private void ensureNeighborModels2D()
+	{
+		int rx = region.getRegionX(), ry = region.getRegionY();
+		String sig = region.getRegionId() + "/" + plane;
+		if (sig.equals(neighborSig2D)) { return; }
+		neighborSig2D = sig;
+		int[] nb = {
+			(rx << 8) | (ry + 1), (rx << 8) | (ry - 1),
+			((rx + 1) << 8) | ry, ((rx - 1) << 8) | ry,
+			((rx + 1) << 8) | (ry + 1), ((rx - 1) << 8) | (ry + 1),
+			((rx + 1) << 8) | (ry - 1), ((rx - 1) << 8) | (ry - 1),
+		};
+		for (int i = 0; i < 8; i++)
+		{
+			neighborModels2D[i] = null;
+			try { neighborModels2D[i] = service.loadRegion(nb[i]); }
+			catch (Throwable ignored) {}
 		}
 	}
 
@@ -3991,7 +4034,8 @@ public class MapEditorFrame extends JFrame
 					showSpawns ? service.getSpawnsInRegion(region.getRegionId()) : null);
 				if (showNeighbors)
 				{
-					sceneBuilder.appendNeighborStrips(scene3D, region, plane, renderOptions.showObjects);
+					sceneBuilder.appendNeighborStrips(scene3D, region, plane, renderOptions.showObjects,
+						net.runelite.cache.region.Region.X);
 				}
 				animBaseSize = scene3D.size();
 				sceneBuilder.appendAnimatedObjects(scene3D, region, plane, animTick,
@@ -4004,7 +4048,8 @@ public class MapEditorFrame extends JFrame
 					showSpawns ? service.getSpawnsInRegion(region.getRegionId()) : null, -1);
 				if (showNeighbors)
 				{
-					sceneBuilder.appendNeighborStrips(scene3D, region, plane, renderOptions.showObjects);
+					sceneBuilder.appendNeighborStrips(scene3D, region, plane, renderOptions.showObjects,
+						net.runelite.cache.region.Region.X);
 				}
 			}
 			rebuildPlaneGrid();
@@ -4052,6 +4097,7 @@ public class MapEditorFrame extends JFrame
 		Renderer3D r = (sharpWhileMoving || (keysDown.isEmpty() && !orbiting)) ? renderer3D : renderer3DFast;
 		image3D = r.render(scene3D, camera, texSource);
 		canvas3D.repaint();
+		if (popout3DFrame != null && popout3DFrame.isVisible()) popout3DFrame.repaint();
 	}
 
 	/** Render at reduced resolution for responsiveness while interacting. */
@@ -4062,6 +4108,7 @@ public class MapEditorFrame extends JFrame
 		Renderer3D r = sharpWhileMoving ? renderer3D : renderer3DFast;
 		image3D = r.render(scene3D, camera, texSource);
 		canvas3D.repaint();
+		if (popout3DFrame != null && popout3DFrame.isVisible()) popout3DFrame.repaint();
 	}
 
 	private void render3DFull()
@@ -4069,6 +4116,57 @@ public class MapEditorFrame extends JFrame
 		ensureScene();
 		image3D = renderer3D.render(scene3D, camera, texSource);
 		canvas3D.repaint();
+		if (popout3DFrame != null && popout3DFrame.isVisible()) popout3DFrame.repaint();
+	}
+
+	private JFrame buildPopoutFrame(String title, boolean is3D)
+	{
+		JFrame frame = new JFrame(title);
+		frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
+		JPanel panel = new JPanel()
+		{
+			@Override
+			protected void paintComponent(java.awt.Graphics g)
+			{
+				super.paintComponent(g);
+				BufferedImage img = is3D ? image3D : image2D;
+				if (img != null)
+				{
+					g.drawImage(img, 0, 0, getWidth(), getHeight(), null);
+				}
+				else
+				{
+					g.setColor(java.awt.Color.DARK_GRAY);
+					g.fillRect(0, 0, getWidth(), getHeight());
+				}
+			}
+		};
+		panel.setPreferredSize(new java.awt.Dimension(960, 720));
+		panel.setBackground(java.awt.Color.BLACK);
+		frame.add(panel);
+		frame.pack();
+		frame.setLocationRelativeTo(null);
+		return frame;
+	}
+
+	private void togglePopout2D()
+	{
+		if (popout2DFrame == null)
+		{
+			popout2DFrame = buildPopoutFrame("Map Editor — 2D View", false);
+		}
+		popout2DFrame.setVisible(!popout2DFrame.isVisible());
+		if (popout2DFrame.isVisible()) popout2DFrame.repaint();
+	}
+
+	private void togglePopout3D()
+	{
+		if (popout3DFrame == null)
+		{
+			popout3DFrame = buildPopoutFrame("Map Editor — 3D View", true);
+		}
+		popout3DFrame.setVisible(!popout3DFrame.isVisible());
+		if (popout3DFrame.isVisible()) popout3DFrame.repaint();
 	}
 
 	/** Map a click in the 3D canvas to a tile (x,y) via a colour-id pick pass. */
@@ -4309,8 +4407,8 @@ public class MapEditorFrame extends JFrame
 
 	private int[] tile2D(MouseEvent e)
 	{
-		int ox = Math.max(0, (canvas2D.getWidth() - 64 * tileSize) / 2);
-		int oy = Math.max(0, (canvas2D.getHeight() - 64 * tileSize) / 2);
+		int ox = Math.max(0, (canvas2D.getWidth() - image2DSize()) / 2) + neighbor2DStrip();
+		int oy = Math.max(0, (canvas2D.getHeight() - image2DSize()) / 2) + neighbor2DStrip();
 		int x = (e.getX() - ox) / tileSize;
 		int y = 63 - (e.getY() - oy) / tileSize;
 		return (x < 0 || x > 63 || y < 0 || y > 63) ? null : new int[]{x, y};
@@ -4489,8 +4587,8 @@ public class MapEditorFrame extends JFrame
 	/** Tile coords for a mouse event, clamped to the 0..63 region bounds. */
 	private int[] tileClamped(MouseEvent e)
 	{
-		int ox = Math.max(0, (canvas2D.getWidth() - 64 * tileSize) / 2);
-		int oy = Math.max(0, (canvas2D.getHeight() - 64 * tileSize) / 2);
+		int ox = Math.max(0, (canvas2D.getWidth() - image2DSize()) / 2) + neighbor2DStrip();
+		int oy = Math.max(0, (canvas2D.getHeight() - image2DSize()) / 2) + neighbor2DStrip();
 		int x = Math.max(0, Math.min(63, (e.getX() - ox) / tileSize));
 		int y = Math.max(0, Math.min(63, 63 - (e.getY() - oy) / tileSize));
 		return new int[]{x, y};
@@ -5774,8 +5872,8 @@ public class MapEditorFrame extends JFrame
 				{
 					java.awt.Rectangle vr = canvasScroll.getViewport().getViewRect();
 					double s = minimapImage.getWidth() / (64.0 * tileSize);
-					int ox = Math.max(0, (canvas2D.getPreferredSize().width - 64 * tileSize) / 2);
-					int oy = Math.max(0, (canvas2D.getPreferredSize().height - 64 * tileSize) / 2);
+					int ox = Math.max(0, (canvas2D.getPreferredSize().width - image2DSize()) / 2) + neighbor2DStrip();
+					int oy = Math.max(0, (canvas2D.getPreferredSize().height - image2DSize()) / 2) + neighbor2DStrip();
 					g.setColor(Color.WHITE);
 					g.drawRect(mx + (int) ((vr.x - ox) * s), my + (int) ((vr.y - oy) * s),
 						(int) (vr.width * s), (int) (vr.height * s));
@@ -5819,8 +5917,8 @@ public class MapEditorFrame extends JFrame
 		if (show2D())
 		{
 			double s = 64.0 * tileSize / minimapImage.getWidth();
-			int ox = Math.max(0, (canvas2D.getPreferredSize().width - 64 * tileSize) / 2);
-			int oy = Math.max(0, (canvas2D.getPreferredSize().height - 64 * tileSize) / 2);
+			int ox = Math.max(0, (canvas2D.getPreferredSize().width - image2DSize()) / 2) + neighbor2DStrip();
+			int oy = Math.max(0, (canvas2D.getPreferredSize().height - image2DSize()) / 2) + neighbor2DStrip();
 			javax.swing.JViewport vp = canvasScroll.getViewport();
 			int nx = ox + (int) ((e.getX() - mx) * s) - vp.getWidth() / 2;
 			int ny = oy + (int) ((e.getY() - my) * s) - vp.getHeight() / 2;
@@ -7646,8 +7744,8 @@ public class MapEditorFrame extends JFrame
 			}
 		}
 
-		private int offX() { return Math.max(0, (getWidth() - 64 * tileSize) / 2); }
-		private int offY() { return Math.max(0, (getHeight() - 64 * tileSize) / 2); }
+		private int offX() { return Math.max(0, (getWidth() - image2DSize()) / 2) + neighbor2DStrip(); }
+		private int offY() { return Math.max(0, (getHeight() - image2DSize()) / 2) + neighbor2DStrip(); }
 
 		private int[] tileAt(MouseEvent e)
 		{
@@ -7763,7 +7861,8 @@ public class MapEditorFrame extends JFrame
 				}
 				else
 				{
-					g.drawImage(img, ox, oy, null);
+					// ox/oy point to tile (0,63) of the main region; the image starts neighbor2DStrip() earlier.
+					g.drawImage(img, ox - neighbor2DStrip(), oy - neighbor2DStrip(), null);
 				}
 			}
 			if (is3D && renderOptions.showGrid && plane > 0)
