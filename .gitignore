@@ -4,12 +4,6 @@ dependency-reduced-pom.xml
 *.class
 
 # OSRS cache — copyrighted game data, never commit
-#/cache/
-**/cache/
-main_file_cache.*
-*.dat2
-*.idx
-*.idx[0-9]*
 
 # IDE / OS
 .idea/
